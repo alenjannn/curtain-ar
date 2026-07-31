@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:ar_flutter_plugin_updated/datatypes/config_planedetection.dart';
 import 'package:ar_flutter_plugin_updated/datatypes/hittest_result_types.dart';
@@ -19,9 +20,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:gal/gal.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
+
+import '../models/swatch.dart';
+import '../widgets/swatch_selector.dart';
 
 // ------------------------------------------------------------ plane detection
 
@@ -74,22 +79,16 @@ const Duration kScanFadeDuration = Duration(milliseconds: 350);
 
 // ------------------------------------------------------------------ placement
 
-/// Authored dimensions of the placeholder quad, in metres. What the user sees
-/// is now driven by [CurtainMeasurements]; these describe the asset itself, and
-/// are what test/orientation_test.dart measures its corners against.
+/// Authored dimensions of the panel, in metres. What the user sees is driven by
+/// [CurtainMeasurements]; these describe the geometry itself, and are what
+/// test/orientation_test.dart measures the placed corners against.
+///
+/// Phase 5 no longer ships a model: the panel's GLB is authored at runtime by
+/// [buildBoxGlb] so a swatch colour can be baked into its material. The plugin
+/// offers no primitive geometry and no way to touch a loaded model's materials,
+/// so the colour has to live in the file.
 const double kRectWidthM = 1.0;
 const double kRectHeightM = 2.0;
-
-/// The curtain model.
-///
-/// `flutter_3d_controller` cannot supply this: it is an `InAppWebView` running
-/// Google's `<model-viewer>` component and has no access to the ARCore/ARKit
-/// scene graph, so a model it loads can never become an [ARNode]. The plugin's
-/// only route to a bundled model is [NodeType.fileSystemAppFolderGLB], whose
-/// uri resolves against the app documents directory on both platforms — hence
-/// the copy-out-of-bundle step in `_stageModel`.
-const String kCurtainAssetPath = 'assets/models/curtain1.glb';
-const String kCurtainModelFileName = 'curtain1.glb';
 
 /// Texture for the detected-wall highlight, and the reason walls now show up.
 ///
@@ -100,12 +99,6 @@ const String kCurtainModelFileName = 'curtain1.glb';
 /// around wherever the camera is pointing. On iOS `makePlane` falls back to
 /// SCNPlane's default white material at 0.3 opacity when no texture is given.
 const String kPlaneTextureAssetPath = 'assets/textures/plane_grid.png';
-
-/// Phase 2's flat blue quad, kept as the fallback when the curtain will not
-/// load. A 1.0 × 2.0 m quad in the XY plane (normal +Z), centred on its origin,
-/// rgba(0, 100, 255, 0.6), double sided.
-const String kPlacementAssetPath = 'assets/models/placement_rect.glb';
-const String kPlacementModelFileName = 'placement_rect.glb';
 
 /// Multiplier that renders the model at its nominal size
 /// ([kNominalModelWidthM] × [kNominalModelHeightM]).
@@ -122,6 +115,26 @@ const double kNominalModelWidthM = 1.0;
 const double kNominalModelHeightM = 2.0;
 
 const Duration kPlacementAnimDuration = Duration(milliseconds: 400);
+
+// ---------------------------------------------------------------- phase 5
+
+/// Thickness of the panel. Width and height come from the live measurements;
+/// only the depth is fixed, because a curtain panel does not get thicker when
+/// you make it wider.
+const double kPanelDepthM = 0.05;
+
+/// White flash on capture, then the fade. Short enough not to hide the shot.
+const Duration kShutterFlashDuration = Duration(milliseconds: 150);
+const Duration kShutterFadeDuration = Duration(milliseconds: 250);
+
+/// How long the saved-shot thumbnail stays up before fading out.
+const Duration kThumbnailDuration = Duration(seconds: 4);
+const Duration kThumbnailFadeDuration = Duration(milliseconds: 400);
+const double kThumbnailSize = 72;
+
+/// A colour swap re-anchors and re-adds the node, so it is not free. Anything
+/// past this is worth flagging as a visible hitch during Phase 5 evaluation.
+const int kSwatchSwapFlickerMs = 120;
 
 // ------------------------------------------------------------ resize gestures
 
@@ -533,6 +546,229 @@ GlbSummary? glbSummary(Uint8List bytes) {
   }
 }
 
+// ------------------------------------------------------------- runtime box
+
+/// Builds a GLB for a solid-colour box, in memory.
+///
+/// Phase 5 asks for a coloured box with no model file and no new packages, and
+/// [NodeType] offers only glTF/GLB — the plugin has no primitive geometry and no
+/// material API at all. Authoring the container here is the only thing that
+/// satisfies all three: nothing ships in `assets/`, nothing is downloaded, and
+/// the colour is baked into a real PBR material the native loaders already know
+/// how to read.
+///
+/// 24 vertices rather than 8 so each face carries its own normal; a shared-
+/// vertex cube gets smeared lighting along every edge.
+@visibleForTesting
+Uint8List buildBoxGlb({
+  required double width,
+  required double height,
+  required double depth,
+  required Color color,
+}) {
+  const int glbMagic = 0x46546C67;
+  const int jsonChunkType = 0x4E4F534A;
+  const int binChunkType = 0x004E4942;
+  const int componentFloat = 5126;
+  const int componentUnsignedShort = 5123;
+  const int targetArrayBuffer = 34962;
+  const int targetElementArrayBuffer = 34963;
+
+  final hw = width / 2, hh = height / 2, hd = depth / 2;
+
+  const normalsPerFace = <List<double>>[
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+  ];
+  // Each face's corners wound counter-clockwise seen from outside, so the box
+  // is still right on a renderer that culls back faces.
+  final faces = <List<List<double>>>[
+    [[hw, -hh, hd], [hw, -hh, -hd], [hw, hh, -hd], [hw, hh, hd]],
+    [[-hw, -hh, -hd], [-hw, -hh, hd], [-hw, hh, hd], [-hw, hh, -hd]],
+    [[-hw, hh, hd], [hw, hh, hd], [hw, hh, -hd], [-hw, hh, -hd]],
+    [[-hw, -hh, -hd], [hw, -hh, -hd], [hw, -hh, hd], [-hw, -hh, hd]],
+    [[-hw, -hh, hd], [hw, -hh, hd], [hw, hh, hd], [-hw, hh, hd]],
+    [[hw, -hh, -hd], [-hw, -hh, -hd], [-hw, hh, -hd], [hw, hh, -hd]],
+  ];
+
+  const int vertexCount = 24;
+  const int indexCount = 36;
+  const int positionBytes = vertexCount * 3 * 4;
+  const int normalBytes = vertexCount * 3 * 4;
+  const int indexBytes = indexCount * 2;
+
+  final buffer = ByteData(positionBytes + normalBytes + indexBytes);
+  var positionOffset = 0;
+  var normalOffset = positionBytes;
+  var indexOffset = positionBytes + normalBytes;
+  var vertex = 0;
+
+  for (var face = 0; face < faces.length; face++) {
+    final firstVertex = vertex;
+    for (final corner in faces[face]) {
+      for (var axis = 0; axis < 3; axis++) {
+        // glTF buffers are little-endian regardless of host.
+        buffer.setFloat32(positionOffset, corner[axis], Endian.little);
+        buffer.setFloat32(
+          normalOffset,
+          normalsPerFace[face][axis],
+          Endian.little,
+        );
+        positionOffset += 4;
+        normalOffset += 4;
+      }
+      vertex++;
+    }
+    for (final corner in <int>[0, 1, 2, 0, 2, 3]) {
+      buffer.setUint16(indexOffset, firstVertex + corner, Endian.little);
+      indexOffset += 2;
+    }
+  }
+
+  final json = jsonEncode(<String, dynamic>{
+    'asset': {'version': '2.0', 'generator': 'simply_curtains_ar runtime box'},
+    'scene': 0,
+    'scenes': [
+      {
+        'nodes': [0],
+      },
+    ],
+    'nodes': [
+      {'mesh': 0},
+    ],
+    'meshes': [
+      {
+        'primitives': [
+          {
+            'attributes': {'POSITION': 0, 'NORMAL': 1},
+            'indices': 2,
+            'material': 0,
+          },
+        ],
+      },
+    ],
+    'materials': [
+      {
+        'name': 'swatch',
+        'pbrMetallicRoughness': {
+          'baseColorFactor': _baseColorFactor(color),
+          'metallicFactor': 0.0,
+          // Fabric is matte. A glossy panel reads as plastic and picks up
+          // highlights that fight the camera feed.
+          'roughnessFactor': 0.9,
+        },
+        // The user can walk behind the panel; culling would make it vanish.
+        'doubleSided': true,
+      },
+    ],
+    'accessors': [
+      {
+        'bufferView': 0,
+        'componentType': componentFloat,
+        'count': vertexCount,
+        'type': 'VEC3',
+        // Required by the spec on POSITION, and the bounds Phase 3's inspector
+        // reads back to work out the model's real-world size.
+        'min': [-hw, -hh, -hd],
+        'max': [hw, hh, hd],
+      },
+      {
+        'bufferView': 1,
+        'componentType': componentFloat,
+        'count': vertexCount,
+        'type': 'VEC3',
+      },
+      {
+        'bufferView': 2,
+        'componentType': componentUnsignedShort,
+        'count': indexCount,
+        'type': 'SCALAR',
+      },
+    ],
+    'bufferViews': [
+      {
+        'buffer': 0,
+        'byteOffset': 0,
+        'byteLength': positionBytes,
+        'target': targetArrayBuffer,
+      },
+      {
+        'buffer': 0,
+        'byteOffset': positionBytes,
+        'byteLength': normalBytes,
+        'target': targetArrayBuffer,
+      },
+      {
+        'buffer': 0,
+        'byteOffset': positionBytes + normalBytes,
+        'byteLength': indexBytes,
+        'target': targetElementArrayBuffer,
+      },
+    ],
+    'buffers': [
+      {'byteLength': buffer.lengthInBytes},
+    ],
+  });
+
+  // Both chunks must end on a 4-byte boundary: JSON pads with spaces, BIN with
+  // zeros. Loaders reject a GLB whose chunk lengths do not line up.
+  final jsonBytes = utf8.encode(json);
+  final jsonPadding = (4 - jsonBytes.length % 4) % 4;
+  final binBytes = buffer.buffer.asUint8List();
+  final binPadding = (4 - binBytes.length % 4) % 4;
+
+  const headerLength = 12;
+  const chunkHeaderLength = 8;
+  final totalLength = headerLength +
+      chunkHeaderLength +
+      jsonBytes.length +
+      jsonPadding +
+      chunkHeaderLength +
+      binBytes.length +
+      binPadding;
+
+  final out = BytesBuilder(copy: false);
+  final header = ByteData(headerLength)
+    ..setUint32(0, glbMagic, Endian.little)
+    ..setUint32(4, 2, Endian.little)
+    ..setUint32(8, totalLength, Endian.little);
+  out.add(header.buffer.asUint8List());
+
+  final jsonHeader = ByteData(chunkHeaderLength)
+    ..setUint32(0, jsonBytes.length + jsonPadding, Endian.little)
+    ..setUint32(4, jsonChunkType, Endian.little);
+  out.add(jsonHeader.buffer.asUint8List());
+  out.add(jsonBytes);
+  out.add(Uint8List.fromList(List<int>.filled(jsonPadding, 0x20)));
+
+  final binHeader = ByteData(chunkHeaderLength)
+    ..setUint32(0, binBytes.length + binPadding, Endian.little)
+    ..setUint32(4, binChunkType, Endian.little);
+  out.add(binHeader.buffer.asUint8List());
+  out.add(binBytes);
+  out.add(Uint8List.fromList(List<int>.filled(binPadding, 0)));
+
+  return out.takeBytes();
+}
+
+/// glTF's `baseColorFactor` is linear, Flutter's [Color] is sRGB. Skipping the
+/// transfer-function conversion is why hand-written glTF colours come out
+/// looking washed out next to the swatch that produced them.
+List<double> _baseColorFactor(Color color) => <double>[
+      _srgbToLinear(color.r),
+      _srgbToLinear(color.g),
+      _srgbToLinear(color.b),
+      color.a,
+    ];
+
+double _srgbToLinear(double channel) => channel <= 0.04045
+    ? channel / 12.92
+    : math.pow((channel + 0.055) / 1.055, 2.4).toDouble();
+
 /// Transient "that tap did not land on a wall" feedback. Value type so the
 /// notifier can skip identical updates.
 @immutable
@@ -684,9 +920,22 @@ class _ArScreenState extends State<ArScreen>
 
   // ------------------------------------------------------------- placement
 
-  /// Filenames passed to the plugin, relative to the app documents directory.
-  String? _curtainUri;
-  String? _fallbackUri;
+  /// Filenames passed to the plugin, relative to the app documents directory,
+  /// keyed by swatch id. One file per colour — see [_stagePanel].
+  final Map<String, String> _panelUris = <String, String>{};
+
+  /// Swatches whose renderable the device refused. Checked before a swap so a
+  /// bad colour reports instead of leaving the wall empty.
+  final Set<String> _warmUpFailures = <String>{};
+
+  /// The colour the panel is currently wearing.
+  Swatch _selectedSwatch = kSwatches.first;
+
+  /// The palette slides up once there is something to recolour.
+  bool _swatchSelectorVisible = false;
+
+  /// Where the last screenshot was written, for the capture dialog.
+  String? _screenshotPath;
 
   final ValueNotifier<ModelLoadState> _modelState =
       ValueNotifier<ModelLoadState>(ModelLoadState.loading);
@@ -733,6 +982,20 @@ class _ArScreenState extends State<ArScreen>
   ARPlaneAnchor? _placedAnchor;
   ARNode? _placedNode;
   vm.Vector3? _placementPosition;
+
+  /// The full hit pose the panel was anchored on. A colour change re-anchors at
+  /// exactly this transform, so the panel does not shift when it is swapped.
+  vm.Matrix4? _placementTransform;
+
+  /// True once a panel is on the wall — gates the camera button and palette.
+  final ValueNotifier<bool> _boxPlaced = ValueNotifier<bool>(false);
+
+  /// Drives the shutter flash and the saved-shot thumbnail.
+  final ValueNotifier<bool> _shutterFlash = ValueNotifier<bool>(false);
+  final ValueNotifier<Uint8List?> _thumbnail = ValueNotifier<Uint8List?>(null);
+  Timer? _thumbnailTimer;
+  bool _isCapturing = false;
+  bool _isSwappingSwatch = false;
 
   /// The model's orientation *relative to its anchor*, held so every animation
   /// frame can recompose the same pose at a new scale.
@@ -845,6 +1108,10 @@ class _ArScreenState extends State<ArScreen>
     _measurements.dispose();
     _showInstructions.dispose();
     _instructionTimer?.cancel();
+    _thumbnailTimer?.cancel();
+    _boxPlaced.dispose();
+    _shutterFlash.dispose();
+    _thumbnail.dispose();
     _arSessionManager?.dispose();
     super.dispose();
   }
@@ -946,7 +1213,7 @@ class _ArScreenState extends State<ArScreen>
       _startPosePolling();
       // Compiling the curtain's renderable needs a live session, so the second
       // half of the preload can only start here.
-      unawaited(_preload?.then((_) => _warmUpCurtain()));
+      unawaited(_preload?.then((_) => _warmUpPanels()));
     } catch (e) {
       _handleArError('AR session failed to initialize: $e');
     }
@@ -1115,162 +1382,149 @@ class _ArScreenState extends State<ArScreen>
 
   // -------------------------------------------------------------- placement
 
-  /// Copies a bundled .glb into the app documents directory and validates its
-  /// container, returning the filename to hand [ARNode], or a message saying
-  /// why not.
+  /// Writes the runtime-authored panel for [swatch] into the app documents
+  /// directory and validates it, returning the filename to hand [ARNode].
   ///
-  /// A missing or malformed model is an expected condition, not an exceptional
-  /// one, so it comes back as a value. Throwing across the preload's async
-  /// boundary also escapes into the zone before the caller's handler runs,
-  /// which turns a handled failure into an unhandled error report.
+  /// One file per colour, and the filename must differ per colour: Android
+  /// caches renderables under `ModelRenderable.setRegistryId(modelPath)`, so
+  /// reusing a single `panel.glb` would serve the *previously compiled* colour
+  /// forever and the swatch would appear to do nothing.
   ///
-  /// Rewritten every session so an edited asset never gets shadowed by a stale
-  /// copy.
-  Future<({String? uri, String? error})> _stageModel(
-    String assetPath,
-    String fileName, {
-    bool isCurtain = false,
-  }) async {
+  /// A malformed model is an expected condition, not an exceptional one, so it
+  /// comes back as a value. Throwing across the preload's async boundary also
+  /// escapes into the zone before the caller's handler runs, which turns a
+  /// handled failure into an unhandled error report.
+  Future<({String? uri, String? error})> _stagePanel(Swatch swatch) async {
     try {
-      final data = await rootBundle.load(assetPath);
-      final bytes = data.buffer.asUint8List(
-        data.offsetInBytes,
-        data.lengthInBytes,
+      final bytes = buildBoxGlb(
+        width: kNominalModelWidthM,
+        height: kNominalModelHeightM,
+        depth: kPanelDepthM,
+        color: swatch.color,
       );
 
+      // The generator is ours, but a container error here would surface on the
+      // device as an opaque "Unable to load renderable", so it is still checked.
       final containerError = glbContainerError(bytes);
       if (containerError != null) {
         return (
           uri: null,
-          error: '$assetPath is not a usable GLB: $containerError',
+          error: 'generated panel for ${swatch.id} is malformed: $containerError',
         );
       }
 
-      _reportModelContents(assetPath, bytes, isCurtain: isCurtain);
-
+      final fileName = 'panel_${swatch.id}.glb';
       final directory = await getApplicationDocumentsDirectory();
-      await File('${directory.path}/$fileName')
-          .writeAsBytes(bytes, flush: true);
+      await File('${directory.path}/$fileName').writeAsBytes(bytes, flush: true);
+      _reportPanelContents(swatch, bytes);
       return (uri: fileName, error: null);
     } catch (e) {
-      return (uri: null, error: 'could not stage $assetPath: $e');
+      return (uri: null, error: 'could not stage panel for ${swatch.id}: $e');
     }
   }
 
-  /// Logs what the file actually holds, plus the scale that would make it the
-  /// right height. glTF stores no unit, so this is the only way to turn "the
-  /// curtain looks tiny" into a number.
-  void _reportModelContents(
-    String assetPath,
-    Uint8List bytes, {
-    required bool isCurtain,
-  }) {
+  /// Logs what the generated panel actually contains. glTF stores no unit, so
+  /// this is the only way to turn "the panel looks tiny" into a number.
+  void _reportPanelContents(Swatch swatch, Uint8List bytes) {
     final summary = glbSummary(bytes);
     if (summary == null) {
-      debugPrint('GLB INSPECT → $assetPath: container valid, JSON unreadable');
+      debugPrint('GLB INSPECT → panel_${swatch.id}: container valid, JSON '
+          'unreadable');
       return;
     }
-
-    debugPrint('GLB INSPECT → $assetPath: $summary');
-    if (!isCurtain) return;
-
-    final suggested = summary.suggestedScaleForHeight(kRectHeightM);
-    if (suggested != null) {
-      debugPrint(
-        'GLB INSPECT → for a ${kRectHeightM}m drop set kInitialModelScale to '
-        '${suggested.toStringAsFixed(4)}',
-      );
-    }
-    if (summary.looksLikePlaceholder) {
-      debugPrint(
-        'GLB INSPECT → WARNING: $assetPath has ${summary.materialCount} '
-        'material(s) and ${summary.vertexCount} vertices. That is a stand-in '
-        'shape, not a curtain — export one from Meshy and replace it.',
-      );
-    }
+    debugPrint('GLB INSPECT → panel_${swatch.id} (${swatch.hex}): $summary');
   }
 
-  /// Stages the fallback first — it must be available even when the curtain is
-  /// the thing that failed.
+  /// Stages every swatch up front so a colour change is a node swap rather than
+  /// a file write plus a compile.
   Future<void> _preloadModels() async {
-    final fallback = await _stageModel(
-      kPlacementAssetPath,
-      kPlacementModelFileName,
-    );
-    if (fallback.error != null) {
-      debugPrint('FALLBACK MODEL → ${fallback.error}');
+    // Concurrent: four independent files, and doing them in series put four
+    // documents-directory round trips on the critical path before the first
+    // tap could place anything.
+    final staged = await Future.wait(kSwatches.map(_stagePanel));
+    for (var i = 0; i < kSwatches.length; i++) {
+      final result = staged[i];
+      if (result.uri != null) {
+        _panelUris[kSwatches[i].id] = result.uri!;
+      } else {
+        debugPrint('PANEL STAGE FAILED → ${result.error}');
+      }
     }
-    _fallbackUri = fallback.uri;
 
-    final curtain = await _stageModel(
-      kCurtainAssetPath,
-      kCurtainModelFileName,
-      isCurtain: true,
-    );
-    if (curtain.error != null) {
-      _failToFallback(curtain.error!);
+    if (_panelUris[_selectedSwatch.id] == null) {
+      _failToLoad('no panel could be generated for ${_selectedSwatch.name}');
       return;
     }
-    _curtainUri = curtain.uri;
 
-    // The renderable is not compiled until a node using it is added, so
-    // staging alone does not make the first tap fast. [_warmUpCurtain] does
-    // that, and it needs a live session — it runs from _onArViewCreated.
-    if (_arObjectManager != null) await _warmUpCurtain();
+    // The renderable is not compiled until a node using it is added, so staging
+    // alone does not make the first tap fast. [_warmUpPanels] does that, and it
+    // needs a live session — it runs from _onArViewCreated.
+    if (_arObjectManager != null) await _warmUpPanels();
   }
 
-  /// Forces the native renderer to actually build the curtain's renderable, by
-  /// adding an un-anchored node at a negligible scale and removing it again.
+  /// Forces the native renderer to build each panel's renderable, by adding an
+  /// un-anchored node at a negligible scale and removing it again.
   ///
-  /// This is what makes the preload real. Android caches by
-  /// `ModelRenderable.setRegistryId(modelPath)` and iOS parses the file into an
-  /// `SCNScene`, so the expensive work happens here instead of on the user's
-  /// first tap. Removing an un-anchored node is reliable on both platforms:
-  /// its parent *is* the scene root, which is exactly what `removeNode`
-  /// operates on.
-  Future<void> _warmUpCurtain() async {
+  /// This is what makes the preload real. Android caches by registry id and iOS
+  /// parses the file into an `SCNScene`, so the expensive work happens here
+  /// instead of on the user's first tap — and, because every colour is warmed,
+  /// a swatch swap later costs only the node exchange. Removing an un-anchored
+  /// node is reliable on both platforms: its parent *is* the scene root, which
+  /// is exactly what `removeNode` operates on.
+  Future<void> _warmUpPanels() async {
     final objectManager = _arObjectManager;
-    final uri = _curtainUri;
-    if (objectManager == null || uri == null) return;
+    if (objectManager == null) return;
     if (_modelState.value != ModelLoadState.loading) return;
 
-    final probe = ARNode(
-      type: NodeType.fileSystemAppFolderGLB,
-      uri: uri,
-      name: '[#curtain_warmup]',
-      transformation: vm.Matrix4.compose(
-        vm.Vector3.zero(),
-        vm.Quaternion.identity(),
-        vm.Vector3.all(kMinPlacementScale),
-      ),
-    );
+    for (final swatch in kSwatches) {
+      final uri = _panelUris[swatch.id];
+      if (uri == null) continue;
 
-    bool? added;
-    Object? failure;
-    try {
-      added = await objectManager.addNode(probe);
-    } catch (e) {
-      failure = e;
-    } finally {
-      objectManager.removeNode(probe);
-    }
-
-    if (failure != null || added != true) {
-      _failToFallback(
-        'the native renderer rejected $kCurtainAssetPath '
-        '(unsupported geometry, missing textures, or an unreadable file)'
-        '${failure == null ? '' : ': $failure'}',
+      final probe = ARNode(
+        type: NodeType.fileSystemAppFolderGLB,
+        uri: uri,
+        name: '[#panel_warmup_${swatch.id}]',
+        transformation: vm.Matrix4.compose(
+          vm.Vector3.zero(),
+          vm.Quaternion.identity(),
+          vm.Vector3.all(kMinPlacementScale),
+        ),
       );
-      return;
+
+      bool? added;
+      Object? failure;
+      try {
+        added = await objectManager.addNode(probe);
+      } catch (e) {
+        failure = e;
+      } finally {
+        objectManager.removeNode(probe);
+      }
+
+      // Only the colour the panel is placed in has to compile for the session
+      // to be usable; a later swatch that will not load is reported when it is
+      // actually chosen.
+      if ((failure != null || added != true) && swatch == _selectedSwatch) {
+        _failToLoad(
+          'the native renderer rejected the generated panel '
+          '(unsupported geometry or an unreadable file)'
+          '${failure == null ? '' : ': $failure'}',
+        );
+        return;
+      }
+      if (failure != null || added != true) {
+        _warmUpFailures.add(swatch.id);
+        debugPrint('PANEL WARMUP → ${swatch.name} did not compile');
+      }
     }
 
-    debugPrint('GLB LOADED → preload complete');
+    debugPrint('GLB LOADED → preload complete (${_panelUris.length} panels)');
     _modelState.value = ModelLoadState.ready;
   }
 
-  /// Task 7: keep the session usable by falling back to the Phase 2 rectangle,
-  /// and say so loudly rather than silently showing the wrong object.
-  void _failToFallback(String reason) {
+  /// The panel could not be built or compiled. Say so loudly rather than
+  /// silently showing nothing at all.
+  void _failToLoad(String reason) {
     debugPrint('GLB LOAD FAILED → $reason');
     if (!mounted || _modelState.value == ModelLoadState.fallback) return;
     _modelState.value = ModelLoadState.fallback;
@@ -1280,19 +1534,14 @@ class _ArScreenState extends State<ArScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: Colors.red.shade700,
-          content: const Text(
-            'Could not load curtain model — using placeholder shape',
-          ),
+          content: const Text('Could not build the panel for this device'),
         ),
       );
     });
   }
 
-  /// The uri a placement should use right now, and whether it is the curtain.
-  (String?, bool) get _activeModel => switch (_modelState.value) {
-        ModelLoadState.fallback => (_fallbackUri, false),
-        _ => (_curtainUri ?? _fallbackUri, _curtainUri != null),
-      };
+  /// The uri a placement should use right now.
+  String? get _activeModel => _panelUris[_selectedSwatch.id];
 
   Future<void> _placeCurtain(ARHitTestResult hit) async {
     final objectManager = _arObjectManager;
@@ -1307,13 +1556,13 @@ class _ArScreenState extends State<ArScreen>
         _awaitingModel.value = true;
         try {
           await _preload;
-          await _warmUpCurtain();
+          await _warmUpPanels();
         } finally {
           _awaitingModel.value = false;
         }
       }
 
-      final (modelUri, isCurtain) = _activeModel;
+      final modelUri = _activeModel;
       if (modelUri == null) {
         _showHint(const _Hint('Could not load the placement model'));
         return;
@@ -1349,10 +1598,7 @@ class _ArScreenState extends State<ArScreen>
       final nodeAdded = await objectManager.addNode(node, planeAnchor: anchor);
       if (nodeAdded != true) {
         anchorManager.removeAnchor(anchor);
-        if (isCurtain) {
-          _failToFallback(
-              'addNode rejected $kCurtainAssetPath at placement time');
-        }
+        _failToLoad('addNode rejected the generated panel at placement time');
         _showHint(const _Hint('Could not place there — try another spot'));
         return;
       }
@@ -1360,6 +1606,9 @@ class _ArScreenState extends State<ArScreen>
       _placedAnchor = anchor;
       _placedNode = node;
       _placementPosition = hit.worldTransform.getTranslation();
+      // Kept whole, not just the translation: a colour swap re-anchors on this
+      // exact pose so the panel does not shift when it changes.
+      _placementTransform = hit.worldTransform.clone();
       _lastLoggedCameraPosition = _lastCameraPosition;
 
       // Not awaited: the haptic should land with the pop-in, not before it.
@@ -1378,19 +1627,210 @@ class _ArScreenState extends State<ArScreen>
         'scale: [${s.x.toStringAsFixed(3)}, ${s.y.toStringAsFixed(3)}, '
         '${s.z.toStringAsFixed(3)}], ${_measurements.value}',
       );
+      final m = _measurements.value;
       debugPrint(
-        'GLB PLACED → model: ${isCurtain ? kCurtainAssetPath : '$kPlacementAssetPath (fallback)'}, '
-        'anchor type: ${anchor.type.name}, '
+        'BOX PLACED → pos: [${p.x.toStringAsFixed(3)},${p.y.toStringAsFixed(3)},'
+        '${p.z.toStringAsFixed(3)}], size: '
+        '${m.widthM.toStringAsFixed(2)}×${m.heightM.toStringAsFixed(2)}×'
+        '${kPanelDepthM.toStringAsFixed(2)}m, colour: $_selectedSwatch',
+      );
+      debugPrint(
+        'GLB PLACED → anchor type: ${anchor.type.name}, '
         'hit ${hit.type.name} at ${hit.distance.toStringAsFixed(2)} m, '
         '${isVerticalSurface(hit.worldTransform) ? 'vertical — flush to the wall' : 'horizontal — standing upright'}',
       );
 
       _hint.value = null;
       _hasPlacement.value = true;
+      _boxPlaced.value = true;
+      if (!_swatchSelectorVisible) {
+        setState(() => _swatchSelectorVisible = true);
+      }
       _showGestureInstructionsOnce();
     } finally {
       _isPlacing = false;
     }
+  }
+
+  // ------------------------------------------------------------- swatches
+
+  /// Recolours the placed panel.
+  ///
+  /// There is no material API to reach for: [ARNode] carries a uri and a
+  /// transform and nothing else, and the plugin exposes no way to touch a
+  /// loaded model's materials on either platform. So the colour lives in the
+  /// model, and changing it means exchanging the node.
+  ///
+  /// The anchor goes with it. Android's `removeNode` calls
+  /// `scene.removeChild(node)`, but an anchored node's parent is the AnchorNode
+  /// rather than the scene, so removing the node alone silently does nothing
+  /// there and would leave two panels stacked on the wall. Re-anchoring on the
+  /// stored placement transform puts the replacement in exactly the same pose.
+  ///
+  /// Both panels are already compiled by [_warmUpPanels], so the exchange is
+  /// two channel round trips rather than a model load — but it is not free, and
+  /// the elapsed time is measured and logged so Phase 5 can judge the hitch.
+  Future<void> _applySwatch(Swatch swatch) async {
+    if (_isSwappingSwatch) return;
+
+    final previous = _selectedSwatch;
+    setState(() => _selectedSwatch = swatch);
+
+    if (!_hasPlacement.value) {
+      // Nothing on the wall yet — the choice just seeds the next placement.
+      debugPrint('SWATCH → ${swatch.name}, color applied: pending placement');
+      return;
+    }
+
+    final objectManager = _arObjectManager;
+    final anchorManager = _arAnchorManager;
+    final transform = _placementTransform;
+    final uri = _panelUris[swatch.id];
+
+    if (objectManager == null ||
+        anchorManager == null ||
+        transform == null ||
+        uri == null ||
+        _warmUpFailures.contains(swatch.id)) {
+      setState(() => _selectedSwatch = previous);
+      debugPrint('SWATCH → ${swatch.name}, color applied: failed');
+      _reportSwatchUnsupported();
+      return;
+    }
+
+    _isSwappingSwatch = true;
+    final stopwatch = Stopwatch()..start();
+    try {
+      // Drop the old anchor first: on Android this is the only teardown that
+      // actually removes an anchored node.
+      final oldAnchor = _placedAnchor;
+      if (oldAnchor != null) anchorManager.removeAnchor(oldAnchor);
+      _placedAnchor = null;
+      _placedNode = null;
+
+      final anchor = ARPlaneAnchor(transformation: transform);
+      if (await anchorManager.addAnchor(anchor) != true) {
+        throw StateError('re-anchoring for the colour change was refused');
+      }
+
+      _placementCount++;
+      final node = ARNode(
+        type: NodeType.fileSystemAppFolderGLB,
+        uri: uri,
+        name: '[#curtain_$_placementCount]',
+        // Full size straight away: the panel was already on the wall, so
+        // replaying the pop-in would read as a glitch rather than a placement.
+        transformation: _nodeTransform(1),
+      );
+
+      if (await objectManager.addNode(node, planeAnchor: anchor) != true) {
+        anchorManager.removeAnchor(anchor);
+        throw StateError('the device would not render ${swatch.name}');
+      }
+
+      _placedAnchor = anchor;
+      _placedNode = node;
+      stopwatch.stop();
+
+      debugPrint('SWATCH → ${swatch.name}, color applied: success '
+          '(${swatch.hex}, ${stopwatch.elapsedMilliseconds}ms)');
+      if (stopwatch.elapsedMilliseconds > kSwatchSwapFlickerMs) {
+        debugPrint('FLICKER DETECTED');
+        debugPrint('FLICKER → color swap caused '
+            '${stopwatch.elapsedMilliseconds}ms freeze');
+      }
+    } catch (e) {
+      stopwatch.stop();
+      debugPrint('SWATCH → ${swatch.name}, color applied: failed ($e)');
+      // The wall is empty at this point, so the session has to be honest about
+      // it rather than leave the user staring at nothing.
+      setState(() => _selectedSwatch = previous);
+      _clearPlacement();
+      _boxPlaced.value = false;
+      _reportSwatchUnsupported();
+    } finally {
+      _isSwappingSwatch = false;
+    }
+  }
+
+  // ----------------------------------------------------------- screenshot
+
+  /// Captures the AR scene and puts it in the device gallery.
+  ///
+  /// The plugin's API is `ARSessionManager.snapshot()`, which hands back an
+  /// `ImageProvider` rather than bytes — it wraps the PNG the native side
+  /// produced in a [MemoryImage], so the bytes come back off that.
+  ///
+  /// Saving goes through `gal`, not `image_gallery_saver`: the latter is
+  /// unbuildable against the v2 Android embedding (it still references
+  /// `PluginRegistry.Registrar`), which is why it was replaced in pubspec.
+  Future<void> _captureScreenshot() async {
+    final session = _arSessionManager;
+    if (session == null || _isCapturing) return;
+
+    _isCapturing = true;
+    try {
+      // Flash first so the shutter feels immediate, and let it paint before
+      // the capture blocks on the platform channel.
+      _shutterFlash.value = true;
+      await Future<void>.delayed(kShutterFlashDuration);
+      _shutterFlash.value = false;
+
+      final image = await session.snapshot();
+      if (image is! MemoryImage) {
+        throw StateError('snapshot returned ${image.runtimeType}, not bytes');
+      }
+      final bytes = image.bytes;
+
+      // Written to app storage as well as the gallery: gal reports no path
+      // back, and the capture dialog wants somewhere concrete to point at.
+      final directory = await getApplicationDocumentsDirectory();
+      final path = '${directory.path}/ar_capture_'
+          '${DateTime.now().millisecondsSinceEpoch}.png';
+      await File(path).writeAsBytes(bytes, flush: true);
+
+      await Gal.putImageBytes(bytes, album: 'Simply Curtains AR');
+
+      if (!mounted) return;
+      _screenshotPath = path;
+      debugPrint('SCREENSHOT → saved to: $path');
+
+      _thumbnail.value = bytes;
+      _thumbnailTimer?.cancel();
+      _thumbnailTimer = Timer(kThumbnailDuration, () {
+        _thumbnail.value = null;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Screenshot saved ✓')),
+      );
+    } catch (e) {
+      debugPrint('SCREENSHOT → failed: $e');
+      _shutterFlash.value = false;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.red.shade700,
+          content: Text(
+            e is GalException
+                ? 'Could not save to gallery — permission denied'
+                : 'Screenshot not supported on this device',
+          ),
+        ),
+      );
+    } finally {
+      _isCapturing = false;
+    }
+  }
+
+  void _reportSwatchUnsupported() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Color swap not supported on this device — noted as '
+            'limitation'),
+      ),
+    );
   }
 
   /// Task 4: the gesture legend, once per session, auto-dismissed.
@@ -1419,6 +1859,7 @@ class _ArScreenState extends State<ArScreen>
     _placedAnchor = null;
     _placedNode = null;
     _placementPosition = null;
+    _placementTransform = null;
     _nodeRotation = null;
     _hasPlacement.value = false;
   }
@@ -1849,6 +2290,7 @@ class _ArScreenState extends State<ArScreen>
                 ),
                 const Spacer(),
                 _buildBottomPrompt(),
+                _buildSwatchRow(),
                 _buildBottomBar(context),
                 _buildModelLoadingStrip(),
               ],
@@ -1865,6 +2307,50 @@ class _ArScreenState extends State<ArScreen>
             valueListenable: _showInstructions,
             builder: (context, show, _) =>
                 show ? const _GestureInstructions() : const SizedBox.shrink(),
+          ),
+          // Task 3D: shutter flash. Above every other overlay so the whole
+          // frame goes white, and non-interactive so it cannot eat a tap.
+          ValueListenableBuilder<bool>(
+            valueListenable: _shutterFlash,
+            builder: (context, flashing, _) => IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: flashing ? 1 : 0,
+                duration: flashing ? Duration.zero : kShutterFadeDuration,
+                child: const ColoredBox(
+                  color: Colors.white,
+                  child: SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: _boxPlaced,
+                builder: (context, placed, _) => placed
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 56, right: 12),
+                        child: FloatingActionButton(
+                          heroTag: 'ar_capture',
+                          onPressed: _captureScreenshot,
+                          tooltip: 'Capture photo',
+                          child: const Icon(Icons.camera_alt_rounded),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.bottomLeft,
+              child: ValueListenableBuilder<Uint8List?>(
+                valueListenable: _thumbnail,
+                builder: (context, bytes, _) =>
+                    _CaptureThumbnail(bytes: bytes),
+              ),
+            ),
           ),
         ],
       ),
@@ -1895,6 +2381,45 @@ class _ArScreenState extends State<ArScreen>
           ),
         );
       },
+    );
+  }
+
+  /// Tasks 3C and 3F: the palette, with the reset beside it.
+  ///
+  /// Mounted from the moment the screen builds rather than swapped in when a
+  /// panel lands — [SwatchSelector] animates on its `visible` flag, and a
+  /// widget that is inserted and animated in the same frame starts its slide
+  /// from wherever the layout first put it.
+  Widget _buildSwatchRow() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SwatchSelector(
+          swatches: kSwatches,
+          selectedSwatch: _selectedSwatch,
+          onSwatchSelected: (swatch) => unawaited(_applySwatch(swatch)),
+          visible: _swatchSelectorVisible,
+        ),
+        if (_swatchSelectorVisible)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: TextButton.icon(
+                onPressed: _selectedSwatch == kSwatches.first
+                    ? null
+                    : () => unawaited(_applySwatch(kSwatches.first)),
+                icon: const Icon(Icons.format_color_reset, size: 16),
+                label: const Text('Reset Color'),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  disabledForegroundColor: Colors.white38,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -1994,9 +2519,16 @@ class _ArScreenState extends State<ArScreen>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            _CaptureRow(label: 'Fabric/Color', value: _selectedSwatch.name),
+            const SizedBox(height: 4),
             _MeasurementRow(label: 'Width', valueCm: measurements.widthCm),
             const SizedBox(height: 4),
             _MeasurementRow(label: 'Height', valueCm: measurements.heightCm),
+            const SizedBox(height: 4),
+            _CaptureRow(
+              label: 'Photo',
+              value: _screenshotPath == null ? 'Not taken' : 'Saved ✓',
+            ),
           ],
         ),
         actions: [
@@ -2005,6 +2537,82 @@ class _ArScreenState extends State<ArScreen>
             child: const Text('OK'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A `Label:  value` line in the capture dialog, laid out on the same 72px
+/// label column as [_MeasurementRow] so the two read as one table.
+class _CaptureRow extends StatelessWidget {
+  const _CaptureRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 108,
+          child: Text('$label:', style: const TextStyle(fontSize: 16)),
+        ),
+        Flexible(
+          child: Text(
+            value,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Task 3D: proof the capture landed, bottom-left, gone after a few seconds.
+///
+/// Fades itself out rather than vanishing, and holds its slot with a
+/// zero-opacity box until the fade finishes — swapping straight to a
+/// `SizedBox.shrink` would cut the animation off on its first frame.
+class _CaptureThumbnail extends StatelessWidget {
+  const _CaptureThumbnail({required this.bytes});
+
+  final Uint8List? bytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final data = bytes;
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        opacity: data == null ? 0 : 1,
+        duration: kThumbnailFadeDuration,
+        curve: Curves.easeOut,
+        child: Padding(
+          padding: const EdgeInsets.only(left: 16, bottom: 16),
+          child: SizedBox(
+            width: kThumbnailSize,
+            height: kThumbnailSize,
+            child: data == null
+                ? null
+                : ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white70, width: 2),
+                      ),
+                      child: Image.memory(
+                        data,
+                        width: kThumbnailSize,
+                        height: kThumbnailSize,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                      ),
+                    ),
+                  ),
+          ),
+        ),
       ),
     );
   }

@@ -11,6 +11,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:flutter/material.dart';
+
+import 'package:simply_curtains_ar/models/swatch.dart';
 import 'package:simply_curtains_ar/screens/ar_screen.dart';
 
 Uint8List _readAsset(String path) => File(path).readAsBytesSync();
@@ -188,4 +191,98 @@ void main() {
       expect(glbSummary(_glb(json: 'not json at all')), isNull);
     });
   });
+
+  // The Phase 5 panel has no asset file behind it — the GLB is authored at
+  // runtime so a colour can be baked into its material. That makes these
+  // checks the only thing standing between a malformed container and an
+  // opaque "Unable to load renderable" on the device.
+  group('runtime box', () {
+    Uint8List box({
+      double width = 1.0,
+      double height = 2.0,
+      double depth = 0.05,
+      Color color = const Color(0xFFF5F5F5),
+    }) =>
+        buildBoxGlb(
+          width: width,
+          height: height,
+          depth: depth,
+          color: color,
+        );
+
+    test('produces a container the loader will accept', () {
+      expect(glbContainerError(box()), isNull);
+    });
+
+    test('declares a length that matches the bytes it emitted', () {
+      final bytes = box();
+      final declared = ByteData.view(bytes.buffer).getUint32(8, Endian.little);
+
+      expect(declared, bytes.lengthInBytes);
+      expect(bytes.lengthInBytes % 4, 0, reason: 'chunks stay 4-byte aligned');
+    });
+
+    test('carries real geometry and a material, not a placeholder', () {
+      final summary = glbSummary(box())!;
+
+      expect(summary.meshCount, 1);
+      expect(summary.materialCount, 1);
+      // Four corners per face so each face gets its own normal.
+      expect(summary.vertexCount, 24);
+      expect(summary.looksLikePlaceholder, isFalse);
+    });
+
+    test('reports bounds matching the requested size', () {
+      final summary = glbSummary(box(width: 0.8, height: 1.8, depth: 0.05))!;
+
+      expect(summary.width, closeTo(0.8, 1e-6));
+      expect(summary.height, closeTo(1.8, 1e-6));
+      expect(summary.depth, closeTo(0.05, 1e-6));
+    });
+
+    test('a panel authored at nominal size needs no scale correction', () {
+      // The gesture readout multiplies by measurement/nominal, so authoring the
+      // panel at exactly the nominal size is what keeps the centimetre figures
+      // truthful at scale 1.
+      final summary = glbSummary(
+        box(width: kNominalModelWidthM, height: kNominalModelHeightM),
+      )!;
+
+      expect(
+        summary.suggestedScaleForHeight(kNominalModelHeightM),
+        closeTo(1.0, 1e-6),
+      );
+    });
+
+    test('bakes the swatch colour into the material, in linear space', () {
+      final decoded = _decodeJsonChunk(box(color: const Color(0xFF795548)));
+      final factor = (decoded['materials'] as List).first['pbrMetallicRoughness']
+          ['baseColorFactor'] as List;
+
+      // 0x79 -> 0.4745 sRGB -> 0.1912 linear. Emitting the sRGB value straight
+      // through is why hand-written glTF colours come out washed out; the gap
+      // here is more than 2x on the darkest channel.
+      expect((factor[0] as num).toDouble(), closeTo(0.191202, 1e-5));
+      expect((factor[1] as num).toDouble(), closeTo(0.090842, 1e-5));
+      expect((factor[2] as num).toDouble(), closeTo(0.064803, 1e-5));
+      expect((factor[3] as num).toDouble(), closeTo(1.0, 1e-6));
+    });
+
+    test('every swatch in the palette produces a loadable panel', () {
+      for (final swatch in kSwatches) {
+        final bytes = box(color: swatch.color);
+        expect(glbContainerError(bytes), isNull, reason: swatch.name);
+        expect(glbSummary(bytes)!.looksLikePlaceholder, isFalse,
+            reason: swatch.name);
+      }
+    });
+  });
+}
+
+/// Reads the JSON chunk back out of a GLB.
+Map<String, dynamic> _decodeJsonChunk(Uint8List bytes) {
+  final data = ByteData.view(bytes.buffer);
+  final length = data.getUint32(12, Endian.little);
+  return jsonDecode(utf8.decode(bytes.sublist(20, 20 + length)).trim())
+      as Map<String, dynamic>;
 }

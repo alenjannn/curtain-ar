@@ -14,7 +14,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
 
+import 'package:simply_curtains_ar/models/swatch.dart';
 import 'package:simply_curtains_ar/screens/ar_screen.dart';
+import 'package:simply_curtains_ar/widgets/swatch_selector.dart';
 
 /// Mirrors `PermissionStatus` ordering in permission_handler_platform_interface.
 const int _kStatusDenied = 0;
@@ -160,7 +162,9 @@ void main() {
   /// filesystem and the warm-up makes a platform-channel round trip, neither
   /// of which advances on the fake clock.
   Future<void> settlePreload(WidgetTester tester) async {
-    for (var i = 0; i < 8; i++) {
+    // Generous: staging authors and writes one panel per swatch, then warms a
+    // renderable for each, and none of that advances on the fake clock.
+    for (var i = 0; i < 16; i++) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 50)),
       );
@@ -175,7 +179,7 @@ void main() {
     await settlePreload(tester);
     await emitSessionCallback(tester, 'onPlaneDetected', 1);
     await emitSessionCallback(tester, 'onPlaneOrPointTap', <Object>[_wallHit]);
-    for (var i = 0; i < 6; i++) {
+    for (var i = 0; i < 12; i++) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 20)),
       );
@@ -592,19 +596,17 @@ void main() {
   });
 
   group('curtain model', () {
-    testWidgets(
-        'falls back to the placeholder when the curtain will not render',
-        (tester) async {
+    testWidgets('reports a panel the renderer will not compile', (tester) async {
       // The stubbed addNode returns null, so the warm-up cannot compile a
-      // renderable — the same signal a real device gives for a model it
-      // cannot load. Staging succeeds here (curtain1.glb is a well-formed
-      // container), so this covers the renderer-rejects-it branch.
+      // renderable — the same signal a real device gives for geometry it
+      // cannot load. Authoring the GLB always succeeds (it is built in memory),
+      // so this covers the renderer-rejects-it branch specifically.
       await pumpScreenWithSession(tester);
       await settlePreload(tester);
       await tester.pump(const Duration(milliseconds: 400));
 
       expect(
-        find.text('Could not load curtain model — using placeholder shape'),
+        find.text('Could not build the panel for this device'),
         findsOneWidget,
       );
 
@@ -1176,6 +1178,182 @@ void main() {
     });
   });
 
+  // ================================================= phase 5: colour & photo
+
+  group('swatch palette', () {
+    testWidgets('the palette stays parked until a panel is placed',
+        (tester) async {
+      await pumpScreenWithSession(tester);
+      await settlePreload(tester);
+
+      // Mounted from the first build so its slide has somewhere to start, but
+      // inert: the row must not accept a tap while it is off-screen.
+      expect(find.byType(SwatchSelector), findsOneWidget);
+      expect(
+        tester.widget<SwatchSelector>(find.byType(SwatchSelector)).visible,
+        isFalse,
+      );
+      expect(find.text('Reset Color'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('placing a panel slides the palette up', (tester) async {
+      await pumpScreenWithSession(tester);
+      await placeCurtain(tester);
+
+      final selector =
+          tester.widget<SwatchSelector>(find.byType(SwatchSelector));
+      expect(selector.visible, isTrue);
+      expect(selector.selectedSwatch, kSwatches.first);
+      for (final swatch in kSwatches) {
+        expect(find.text(swatch.name), findsOneWidget);
+      }
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('choosing a swatch re-anchors the panel in the new colour',
+        (tester) async {
+      await pumpScreenWithSession(tester);
+      await placeCurtain(tester);
+      await dismissSnackBar(tester);
+      objectCalls.clear();
+      anchorCalls.clear();
+
+      await tester.tap(find.text('Mocha Brown'));
+      for (var i = 0; i < 8; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+
+      expect(
+        tester
+            .widget<SwatchSelector>(find.byType(SwatchSelector))
+            .selectedSwatch,
+        kSwatches.last,
+      );
+
+      // There is no material API on ARNode, so the colour lives in the model
+      // and the swap is an anchor teardown plus a fresh anchored node. Removing
+      // only the node would silently do nothing on Android and leave two
+      // panels stacked on the wall.
+      expect(anchorCalls.map((c) => c.method), contains('removeAnchor'));
+      expect(anchorCalls.map((c) => c.method), contains('addAnchor'));
+
+      final added = objectCalls
+          .where((c) => c.method == 'addNodeToPlaneAnchor')
+          .toList();
+      expect(added, isNotEmpty);
+      expect(
+        (added.last.arguments['node'] as Map)['uri'],
+        'panel_brown.glb',
+        reason: 'a distinct file per colour — Android caches renderables by '
+            'model path, so one shared filename would serve the old colour',
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('Reset Color returns to the first swatch', (tester) async {
+      await pumpScreenWithSession(tester);
+      await placeCurtain(tester);
+      await dismissSnackBar(tester);
+
+      // Disabled while already on the default — nothing to reset to.
+      expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Reset Color'))
+            .onPressed,
+        isNull,
+      );
+
+      await tester.tap(find.text('Slate Grey'));
+      for (var i = 0; i < 8; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+      expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Reset Color'))
+            .onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(find.text('Reset Color'));
+      for (var i = 0; i < 8; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+
+      expect(
+        tester
+            .widget<SwatchSelector>(find.byType(SwatchSelector))
+            .selectedSwatch,
+        kSwatches.first,
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  group('screenshot capture', () {
+    testWidgets('the camera button waits for a placed panel', (tester) async {
+      await pumpScreenWithSession(tester);
+      await settlePreload(tester);
+      expect(find.byIcon(Icons.camera_alt_rounded), findsNothing);
+
+      await emitSessionCallback(tester, 'onPlaneDetected', 1);
+      await emitSessionCallback(tester, 'onPlaneOrPointTap', <Object>[_wallHit]);
+      for (var i = 0; i < 12; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+      // Drains the zero-duration timer flutter_animate posts from initState
+      // when the palette's slide restarts; left pending it fails the test.
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.byIcon(Icons.camera_alt_rounded), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('a failed capture says so instead of pretending', (tester) async {
+      // The stubbed session channel returns null for 'snapshot', which is what
+      // a device without the capability effectively gives back.
+      await pumpScreenWithSession(tester);
+      await placeCurtain(tester);
+      await dismissSnackBar(tester);
+
+      await tester.tap(find.byIcon(Icons.camera_alt_rounded));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      for (var i = 0; i < 6; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+
+      expect(
+        find.text('Screenshot not supported on this device'),
+        findsOneWidget,
+      );
+      // And the flash must not be left covering the scene.
+      expect(find.text('Reset'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
   group('measurement capture', () {
     testWidgets('Next → reports the live numbers in a dialog', (tester) async {
       await pumpScreenWithSession(tester);
@@ -1187,6 +1365,15 @@ void main() {
 
       expect(find.text('AR Measurement Captured'), findsOneWidget);
       final dialog = find.byType(AlertDialog);
+      // Phase 5 hands the quote flow the fabric and the photo state too.
+      expect(
+        find.descendant(of: dialog, matching: find.text('White Linen')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: dialog, matching: find.text('Not taken')),
+        findsOneWidget,
+      );
       expect(
         find.descendant(of: dialog, matching: find.text('100 cm')),
         findsOneWidget,
