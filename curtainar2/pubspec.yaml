@@ -25,6 +25,8 @@ dependencies:
   gal: ^2.3.3                           # Screenshot saving. Replaces image_gallery_saver,
                                         # which is unbuildable: it still references the
                                         # v1 embedding's PluginRegistry.Registrar.
+  flutter_unity_widget: ^2022.2.1
+
 
 dev_dependencies:
   flutter_test:

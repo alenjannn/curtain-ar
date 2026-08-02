@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import 'ar_screen.dart';
+import 'unity_ar_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -9,6 +10,12 @@ class HomeScreen extends StatelessWidget {
   void _launchArPreview(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const ArScreen()),
+    );
+  }
+
+  void _launchUnityArPreview(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const UnityArScreen()),
     );
   }
 
@@ -47,6 +54,16 @@ class HomeScreen extends StatelessWidget {
                   onPressed: () => _launchArPreview(context),
                   child: const Text('Launch AR Preview'),
                 ),
+
+                const SizedBox(height: 16),
+                OutlinedButton(
+                  onPressed: () => _launchUnityArPreview(context),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+                    side: BorderSide(color: primary, width: 1.5),
+                  ),
+                  child: const Text('Launch Unity AR Preview'),
+                ),
               ],
             ).animate().fadeIn(duration: 700.ms, curve: Curves.easeOut).slideY(
                   begin: 0.08,
@@ -60,3 +77,4 @@ class HomeScreen extends StatelessWidget {
     );
   }
 }
+

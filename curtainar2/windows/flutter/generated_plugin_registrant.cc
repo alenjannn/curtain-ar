@@ -7,6 +7,7 @@
 #include "generated_plugin_registrant.h"
 
 #include <flutter_inappwebview_windows/flutter_inappwebview_windows_plugin_c_api.h>
+#include <flutter_unity_widget/flutter_unity_widget_plugin.h>
 #include <gal/gal_plugin_c_api.h>
 #include <geolocator_windows/geolocator_windows.h>
 #include <permission_handler_windows/permission_handler_windows_plugin.h>
@@ -14,6 +15,8 @@
 void RegisterPlugins(flutter::PluginRegistry* registry) {
   FlutterInappwebviewWindowsPluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("FlutterInappwebviewWindowsPluginCApi"));
+  FlutterUnityWidgetPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("FlutterUnityWidgetPlugin"));
   GalPluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("GalPluginCApi"));
   GeolocatorWindowsRegisterWithRegistrar(
