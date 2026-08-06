@@ -43,3 +43,19 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Generated Android and Unity export artifacts
+/android/build/
+/android/unityLibrary/
+/android/unityLibraryPlaceholder/
+/android/shared/
+unity_export.log
+
+# Unity editor caches and local output
+/unity/CurtainAR/[Ll]ibrary/
+/unity/CurtainAR/[Tt]emp/
+/unity/CurtainAR/[Oo]bj/
+/unity/CurtainAR/[Ll]ogs/
+/unity/CurtainAR/[Uu]serSettings/
+/unity/CurtainAR/[Bb]uild/
+/unity/CurtainAR/[Bb]uilds/

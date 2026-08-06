@@ -14,6 +14,16 @@
             android:name="com.google.ar.core"
             android:value="required"
             tools:replace="android:value"/>
+        <!-- Two ARCore SDKs end up on the classpath and each declares the minimum ARCore APK
+             it needs: ar_flutter_plugin_updated pulls com.google.ar:core:1.33.0 (221930000),
+             while Unity's exported :unityLibrary bundles arcore_client.aar from SDK 1.45
+             (241930000). The merger refuses to pick between them. Take the higher of the two —
+             Unity's runtime genuinely requires it, and 1.33 is happy with a newer ARCore APK.
+             Re-check this value whenever the Unity ARCore package is upgraded. -->
+        <meta-data
+            android:name="com.google.ar.core.min_apk_version"
+            android:value="241930000"
+            tools:replace="android:value"/>
         <activity
             android:name=".MainActivity"
             android:exported="true"

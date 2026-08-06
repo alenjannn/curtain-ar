@@ -50,12 +50,22 @@ class HomeScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 48),
+                // Two entry points because the app currently carries two independent AR
+                // engines. Phase 5 (ARCore, driven from Dart) is the one proven on device;
+                // Phase 6 (Unity/AR Foundation in a platform view) is the migration target and
+                // needs a Unity export to do anything. Both stay until Phase 6 is verified on
+                // hardware, at which point ArScreen and this second button come out together.
                 ElevatedButton(
                   onPressed: () => _launchArPreview(context),
                   child: const Text('Launch AR Preview'),
                 ),
+                const SizedBox(height: 6),
+                Text(
+                  'Phase 5 · ARCore',
+                  style: textTheme.bodySmall?.copyWith(color: Colors.black45),
+                ),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
                 OutlinedButton(
                   onPressed: () => _launchUnityArPreview(context),
                   style: OutlinedButton.styleFrom(
@@ -63,6 +73,11 @@ class HomeScreen extends StatelessWidget {
                     side: BorderSide(color: primary, width: 1.5),
                   ),
                   child: const Text('Launch Unity AR Preview'),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Phase 6 · Unity AR Foundation',
+                  style: textTheme.bodySmall?.copyWith(color: Colors.black45),
                 ),
               ],
             ).animate().fadeIn(duration: 700.ms, curve: Curves.easeOut).slideY(

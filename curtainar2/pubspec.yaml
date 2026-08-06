@@ -25,7 +25,12 @@ dependencies:
   gal: ^2.3.3                           # Screenshot saving. Replaces image_gallery_saver,
                                         # which is unbuildable: it still references the
                                         # v1 embedding's PluginRegistry.Registrar.
-  flutter_unity_widget: ^2022.2.1
+  # Fork of flutter_unity_widget. The original's last pub.dev release (2022.2.1) predates
+  # Unity 2023, which stopped making com.unity3d.player.UnityPlayer a FrameLayout and dropped
+  # UnityPlayerActivity from unity-classes.jar — so it cannot compile against a Unity 6 export
+  # at all. The fork publishes upstream's unity_6000 work on the 6000.x.y line. Internal
+  # classes are deliberately identical, so only the import path changes.
+  flutter_unity_widget_2: ^6000.0.0
 
 
 dev_dependencies:

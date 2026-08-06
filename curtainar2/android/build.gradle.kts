@@ -2,6 +2,13 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // Unity's exported library declares its bundled artifacts (unity-classes, the ARCore
+        // client, the ARM64 loaders) by bare name — `implementation(name: 'arcore_client',
+        // ext: 'aar')` — which resolves against a flat directory repository and nothing else.
+        // Without this the :unityLibrary module fails to resolve at build time.
+        findProject(":unityLibrary")?.let { unityProj ->
+            flatDir { dirs(file("${unityProj.projectDir}/libs")) }
+        }
     }
 }
 
@@ -60,11 +67,27 @@ fun Project.alignJvmTargets() {
     }
 }
 
+fun Project.alignCompileSdk() {
+    val androidExt = extensions.findByName("android") ?: return
+    runCatching {
+        // The app and the Unity 6 export both compile against API 36.  Downgrading every
+        // non-Unity module here silently overrides app/build.gradle.kts and can make the final
+        // resource link fail when Unity contributes API-36 attributes.
+        androidExt.javaClass.getMethod("setCompileSdkVersion", Int::class.javaPrimitiveType).invoke(androidExt, 36)
+    }
+}
+
 subprojects {
     // `evaluationDependsOn(":app")` above forces some projects to be evaluated early,
     // and afterEvaluate throws on an already-evaluated project — so handle both cases.
     fun applyFixes() {
         backfillAndroidNamespace()
+        // Unity generates its own module config and means it: :unityLibrary needs
+        // compileSdk 36 for androidx.games:games-activity and for the API 36 attributes in
+        // its own res/. Clamping it to 34 with everything else fails resource linking.
+        if (!path.startsWith(":unityLibrary")) {
+            alignCompileSdk()
+        }
         alignJvmTargets()
     }
     if (state.executed) applyFixes() else afterEvaluate { applyFixes() }
