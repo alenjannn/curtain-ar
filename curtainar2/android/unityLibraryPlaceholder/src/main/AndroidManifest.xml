@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PLACEHOLDER — a real Unity export declares the player activity, the ARCore metadata and the
+     camera permission here. See README.md in this directory. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+</manifest>

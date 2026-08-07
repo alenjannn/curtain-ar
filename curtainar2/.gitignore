@@ -44,10 +44,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Generated Android and Unity export artifacts
+# Generated Android and Unity export artifacts.  Keep the small fallback Unity
+# module below in Git: Flutter's Unity plugin requires a :unityLibrary module
+# even when the generated Unity export is absent.
 /android/build/
 /android/unityLibrary/
-/android/unityLibraryPlaceholder/
 /android/shared/
 unity_export.log
 
