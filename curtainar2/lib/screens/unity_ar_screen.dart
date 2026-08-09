@@ -653,7 +653,7 @@ class _UnityArScreenState extends State<UnityArScreen> {
               ),
               child: Text(
                 _unityUnreachable
-                    ? 'Unity runtime missing'
+                    ? 'Unity AR failed to start'
                     : !_unityReady
                         ? 'Starting AR engine…'
                         : !_planeDetected
@@ -779,7 +779,7 @@ class _UnityUnreachableCard extends StatelessWidget {
           Icon(Icons.extension_off_outlined, color: Colors.amber, size: 42),
           SizedBox(height: 16),
           Text(
-            'Unity runtime not bundled',
+            'Unity AR did not start',
             textAlign: TextAlign.center,
             style: TextStyle(
               color: Colors.white,

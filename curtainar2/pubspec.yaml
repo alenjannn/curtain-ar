@@ -30,7 +30,12 @@ dependencies:
   # UnityPlayerActivity from unity-classes.jar — so it cannot compile against a Unity 6 export
   # at all. The fork publishes upstream's unity_6000 work on the 6000.x.y line. Internal
   # classes are deliberately identical, so only the import path changes.
-  flutter_unity_widget_2: ^6000.0.0
+  # Local patch of 6000.1.0+1. The upstream Android lifecycle code calls
+  # reattachToView before Unity has created its FrameLayout, which crashes on
+  # launch with a NullPointerException. Keep this path dependency so every
+  # clone receives the fix.
+  flutter_unity_widget_2:
+    path: packages/flutter_unity_widget_2
 
 
 dev_dependencies:
