@@ -51,9 +51,9 @@ const Duration _kUnityWriteInterval = Duration(milliseconds: 32);
 const Duration _kScreenshotTimeout = Duration(seconds: 8);
 
 /// How long the platform view may exist without Unity reporting a loaded scene before the screen
-/// calls it: see [_armHandshakeWatchdog]. A real player on a cold start is up well inside this,
-/// even on a slow device; a placeholder `unityLibrary` never gets there at all.
-const Duration _kUnityHandshakeTimeout = Duration(seconds: 12);
+/// calls it: see [_armHandshakeWatchdog]. The first debug launch may need to extract IL2CPP data
+/// before the scene can load, which can take more than 12 seconds on a physical device.
+const Duration _kUnityHandshakeTimeout = Duration(seconds: 30);
 
 // ---------------------------------------------------------------------- ui
 

@@ -1,0 +1,33 @@
+// Based on Unity's Android export (Builds/CurtainAR/shared/common.gradle), plus the property
+// backfill below. See android/shared/keepUnitySymbols.gradle for why this directory exists.
+
+// --- Unity's original content ---
+
+// Don't perform tasks which are specific for building test APK
+if (findProperty("unity.installInBuildFolder") == "true") {
+    tasks.configureEach { task ->
+        if (task.name.contains("AndroidTest") || task.name.contains("UnitTest")) {
+            task.enabled = false
+        }
+    }
+}
+
+// --- Flutter integration additions ---
+
+// libil2cpp.so is not shipped in the export; unityLibrary/build.gradle compiles it at build
+// time in its `buildIl2Cpp` task, which calls getProperty("unity.androidNdkPath") and
+// getProperty("unity.androidSdkPath"). Those are declared in the gradle.properties of the
+// standalone Unity export, which the flutter_unity_widget exporter does not copy either —
+// so unresolved, they'd fail the build with "Could not get unknown property".
+//
+// Derive them from what the module already declares instead of pinning a Unity Hub path in a
+// committed file: Unity writes the absolute NDK path into `android.ndkPath` of the generated
+// build.gradle on every export, so this tracks whatever editor version last exported.
+afterEvaluate {
+    if (!project.hasProperty("unity.androidNdkPath") && project.android.ndkPath != null) {
+        project.ext.set("unity.androidNdkPath", project.android.ndkPath)
+    }
+    if (!project.hasProperty("unity.androidSdkPath")) {
+        project.ext.set("unity.androidSdkPath", project.android.sdkDirectory.absolutePath)
+    }
+}

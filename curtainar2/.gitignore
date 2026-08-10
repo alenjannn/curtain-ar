@@ -44,12 +44,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Generated Android and Unity export artifacts.  Keep the small fallback Unity
-# module below in Git: Flutter's Unity plugin requires a :unityLibrary module
-# even when the generated Unity export is absent.
+# Generated Android and Unity export artifacts. Keep the small fallback Unity
+# module and android/shared Gradle helpers in Git: Flutter's Unity plugin needs
+# both, while the multi-gigabyte Unity player export remains local.
 /android/build/
 /android/unityLibrary/
-/android/shared/
 unity_export.log
 
 # Unity editor caches and local output

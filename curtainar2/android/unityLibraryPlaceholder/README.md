@@ -49,7 +49,7 @@ The app compiles, installs and runs, but the Unity AR screen cannot work:
 
 A placement tap, a swatch tap and a resize gesture all leave Flutter, reach
 `UnityPlayer.UnitySendMessage`, and stop there. Nothing comes back, which is why the Flutter screen
-raises its own "Unity runtime not bundled" card after ~12 seconds rather than waiting forever on a
+raises its own "Unity runtime not bundled" card after ~30 seconds rather than waiting forever on a
 scene that will never load.
 
 Gradle also prints a `WARNING: android/unityLibrary not found` line on every build that falls back
