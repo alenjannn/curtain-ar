@@ -1,4 +1,4 @@
-import 'dart:async';
+  import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -653,7 +653,7 @@ class _UnityArScreenState extends State<UnityArScreen> {
               ),
               child: Text(
                 _unityUnreachable
-                    ? 'Unity AR failed to start'
+                    ? 'Unity runtime missing'
                     : !_unityReady
                         ? 'Starting AR engine…'
                         : !_planeDetected
@@ -779,7 +779,7 @@ class _UnityUnreachableCard extends StatelessWidget {
           Icon(Icons.extension_off_outlined, color: Colors.amber, size: 42),
           SizedBox(height: 16),
           Text(
-            'Unity AR did not start',
+            'Unity runtime not bundled',
             textAlign: TextAlign.center,
             style: TextStyle(
               color: Colors.white,
