@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      UnityPlayer looks this up dynamically using the host application's
+      package name, then calls Resources.getString with the returned ID.
+      A Unity-as-a-Library export without this resource returns ID 0 and the
+      embedded player aborts before loading its first scene.
+    -->
+    <string name="game_view_content_description">Unity game view</string>
+</resources>
