@@ -35,6 +35,11 @@ it, install the project's Unity version, open `unity/CurtainAR`, then use
 `android/unityLibrary` directory, which automatically takes precedence over the
 fallback on the next `flutter run`.
 
+Whenever a Unity scene, model, prefab, material, script, package, or relevant
+project setting changes, export Android again before running Flutter. The
+Android build checks this automatically and stops with a clear “Unity Android
+export is stale” message instead of silently packaging an older scene.
+
 ## iPhone
 
 Running on iPhone requires macOS, Xcode, an Apple signing team, and an

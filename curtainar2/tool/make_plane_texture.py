@@ -16,6 +16,9 @@ copy across the whole plane instead, so the design has to read both ways — hen
 a border plus a centre cross rather than a fine grid.
 """
 
+import utils.http_session
+import utils.transport
+import utils.session
 import struct
 import sys
 import zlib

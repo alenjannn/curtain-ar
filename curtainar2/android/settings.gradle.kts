@@ -64,6 +64,59 @@ val unityLibraryDir = when {
     )
 }
 
+// A Flutter rebuild does not re-export Unity. Refuse to silently package an older Unity player
+// when a scene, model, prefab, material, script, package, or build-relevant setting changed after
+// android/unityLibrary was generated. This is the exact failure mode that made the Editor show the
+// corrected curtain while the phone kept running the old spiked _Curtain_Curtain prefab and old
+// fixed-2-cm resize code.
+if (unityLibraryDir == unityExport) {
+    val unityProjectDir = file("../unity/CurtainAR")
+    val exportMarker = unityExport.resolve("src/main/assets/bin/Data/globalgamemanagers")
+    val watchedUnityPaths =
+        listOf(
+            unityProjectDir.resolve("Assets"),
+            unityProjectDir.resolve("Packages/manifest.json"),
+            unityProjectDir.resolve("Packages/packages-lock.json"),
+            unityProjectDir.resolve("ProjectSettings/EditorBuildSettings.asset"),
+            unityProjectDir.resolve("ProjectSettings/GraphicsSettings.asset"),
+            unityProjectDir.resolve("ProjectSettings/ProjectSettings.asset"),
+            unityProjectDir.resolve("ProjectSettings/QualitySettings.asset"),
+            unityProjectDir.resolve("ProjectSettings/URPProjectSettings.asset"),
+        )
+
+    val newestUnitySource =
+        watchedUnityPaths
+            .asSequence()
+            .filter { it.exists() }
+            .flatMap { path -> if (path.isDirectory) path.walkTopDown().asSequence() else sequenceOf(path) }
+            .filter { it.isFile }
+            .maxByOrNull { it.lastModified() }
+
+    if (!exportMarker.isFile) {
+        throw GradleException(
+            "android/unityLibrary is incomplete: ${exportMarker.relativeTo(rootDir)} is missing. " +
+                "In Unity, run Flutter > Export Android (Debug) and wait for SUCCESSFUL."
+        )
+    }
+
+    // FAT/ZIP timestamp precision can be two seconds; allow that much clock granularity.
+    if (newestUnitySource != null && newestUnitySource.lastModified() > exportMarker.lastModified() + 2_000L) {
+        val sourceTime = java.time.Instant.ofEpochMilli(newestUnitySource.lastModified())
+        val exportTime = java.time.Instant.ofEpochMilli(exportMarker.lastModified())
+        throw GradleException(
+            """
+            The Unity Android export is stale, so Flutter would install an older curtain than the one in the Unity Editor.
+
+            Newest Unity source: ${newestUnitySource.relativeTo(unityProjectDir)} ($sourceTime)
+            Android Unity export: ${exportMarker.relativeTo(rootDir)} ($exportTime)
+
+            Open unity/CurtainAR in Unity and run Flutter > Export Android (Debug). Wait for the
+            successful export, then run flutter clean and flutter run again.
+            """.trimIndent()
+        )
+    }
+}
+
 if (unityLibraryDir == unityPlaceholder) {
     logger.lifecycle(
         "WARNING: android/unityLibrary not found - building against the placeholder. " +
