@@ -158,26 +158,18 @@ class _UnityArScreenState extends State<UnityArScreen> {
   void initState() {
     super.initState();
 
-    // Layered deliberately: the GestureDetector sits between the platform view and the rest of
-    // the tree so it wins the arena before Unity's surface can claim a touch. Only the scale
-    // callbacks are used for drags — Flutter rejects a pan recognizer alongside a scale one, and
-    // ScaleGestureRecognizer already reports one-finger drags through focalPoint.
+    // Keep the native platform view itself free of Flutter gesture recognizers. The transparent
+    // gesture layer is inserted *after* this surface in the Stack below, so it is genuinely
+    // above Android's Unity view and receives taps before that view can consume them.
     _unitySurface = RepaintBoundary(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapUp: _onTapUp,
-        onScaleStart: _onScaleStart,
-        onScaleUpdate: _onScaleUpdate,
-        onScaleEnd: _onScaleEnd,
-        child: UnityWidget(
-          onUnityCreated: _onUnityCreated,
-          onUnityMessage: _onUnityMessage,
-          onUnitySceneLoaded: _onUnitySceneLoaded,
-          fullscreen: false,
-          // Hybrid composition. Without it the Unity surface is composited in its own window and
-          // every Flutter overlay below is drawn *behind* the camera feed.
-          useAndroidViewSurface: true,
-        ),
+      child: UnityWidget(
+        onUnityCreated: _onUnityCreated,
+        onUnityMessage: _onUnityMessage,
+        onUnitySceneLoaded: _onUnitySceneLoaded,
+        fullscreen: false,
+        // Hybrid composition. Without it the Unity surface is composited in its own window and
+        // every Flutter overlay below is drawn *behind* the camera feed.
+        useAndroidViewSurface: true,
       ),
     );
   }
@@ -562,6 +554,22 @@ class _UnityArScreenState extends State<UnityArScreen> {
       body: Stack(
         children: [
           Positioned.fill(child: _unitySurface),
+
+          // A parent GestureDetector does not reliably receive events from an Android platform
+          // view: the native Unity SurfaceView can consume the stream before Flutter wins its
+          // gesture arena. As a later Stack child this transparent layer sits above Unity, while
+          // controls added after it (back, reset, shutter and swatches) still receive their own
+          // taps normally.
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapUp: _onTapUp,
+              onScaleStart: _onScaleStart,
+              onScaleUpdate: _onScaleUpdate,
+              onScaleEnd: _onScaleEnd,
+              child: const SizedBox.expand(),
+            ),
+          ),
 
           // Scanning / initialising overlay. Purely informational, so it must not eat the taps
           // that place the panel.
